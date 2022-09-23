@@ -70,10 +70,121 @@ describe("MultiCall", function () {
     await tx.wait();
   });
 
-  describe("Deploments", () => {
+  describe("Deployments", () => {
     it("Tracks the owner", async () => {
-      console.log(await token0.balanceOf("0x2fEb1512183545f48f6b9C5b4EbfCaF49CfCa6F3"));
-      expect(await multiCall.owner()).to.eq(owner.address);
+      expect(await multiCall.owner()).to.equal(owner.address);
+    });
+  });
+
+  describe("Simple Token Transfer", () => {
+    const amount = ethers.utils.parseUnits("0.75", "ether");
+    let transaction, result;
+
+    beforeEach(async () => {
+      // Approve tokens for transfer...
+      transaction = await token0.approve(multiCall.address, amount);
+      result = await transaction.wait();
+
+      // Define the target contract address...
+      const target = token0.address;
+
+      // Define the function signature we want to call...
+      const signature = "transferFrom(address, address, uint256)";
+
+      // Define the parameters for that function...
+      const parameter = [owner.address, multiCall.address, amount];
+
+      // Encode data...
+      const encodedData = IERC20.encodeFunctionData(signature, parameter);
+
+      // Make the call to our contract...
+      transaction = await multiCall.connect(owner).executeCalls([target], [encodedData]);
+      result = await transaction.wait();
+    });
+
+    it("Updates the owner balance", async () => {
+      expect(await token0.balanceOf(owner.address)).to.equal(0);
+    });
+
+    it("Updates the contract balance", async () => {
+      expect(await token0.balanceOf(multiCall.address)).to.equal(amount);
+    });
+  });
+
+  describe("Multiswap Arbitrage", () => {
+    const amount = ethers.utils.parseUnits("0.75", "ether");
+    let transaction, result, contractBalanceBefore;
+
+    beforeEach(async () => {
+      // Approve tokens for transfer...
+      transaction = await token0.approve(multiCall.address, amount);
+      result = await transaction.wait();
+
+      // Define the target contract addresses...
+      const targets = [token0.address, token0.address, uRouter, token1.address, uRouter, token2.address, sRouter];
+
+      // Define the function signatures we want to call...
+      const signatures = [
+        "transferFrom(address, address, uint256)",
+        "approve(address, uint256)",
+        "swapExactTokensForTokens(uint256, uint256, address[], address, uint256)",
+        "approve(address, uint256)",
+        "swapExactTokensForTokens(uint256, uint256, address[], address, uint256)",
+        "approve(address, uint256)",
+        "swapExactTokensForTokens(uint256, uint256, address[], address, uint256)",
+      ];
+
+      const [amountIn0, amountOut0] = await uniswap.getAmountsOut(amount, [token0.address, token1.address]);
+      const [amountIn1, amountOut1] = await uniswap.getAmountsOut(amountOut0, [token1.address, token2.address]);
+      const deadline = Math.floor(Date.now() / 1000) + 60 * 20;
+
+      // Define the parameters for the functions...
+      const parameters = [
+        [owner.address, multiCall.address, amount], // TransferFrom
+        [uRouter, amount], // Approve Uniswap
+        [amount, 0, [token0.address, token1.address], multiCall.address, deadline], // swapExactTokensForTokens
+        [uRouter, amountOut0], // Approve Uniswap
+        [amountOut0, 0, [token1.address, token2.address], multiCall.address, deadline], // swapExactTokensForTokens
+        [sRouter, amountOut1], // Approve Sushiswap
+        [amountOut1, amount, [token2.address, token0.address], multiCall.address, deadline], // swapExactTokensForTokens
+      ];
+
+      // We'll need to encode each function signature and it's correlated parameters...
+      let data = [];
+
+      for (var i = 0; i < signatures.length; i++) {
+        // If our target address is equal to Uniswap or Sushiswap, use the Uniswap V2 Router interface.
+        // Otherwise we know we are either transferring or approving tokens...
+
+        if (targets[i] == uRouter || targets[i] == sRouter) {
+          encodedData = IUniswapV2Router02.encodeFunctionData(signatures[i], parameters[i]);
+        } else {
+          encodedData = IERC20.encodeFunctionData(signatures[i], parameters[i]);
+        }
+
+        // Push the encodedData to the array...
+        data.push(encodedData);
+      }
+
+      // Make call to our contract...
+      transaction = await multiCall.connect(owner).executeCalls(targets, data);
+      result = await transaction.wait();
+    });
+
+    it("Updates the owner balance", async () => {
+      expect(await token0.balanceOf(owner.address)).to.equal(0);
+    });
+
+    it("Updates the contract balance", async () => {
+      expect(Number(await token0.balanceOf(multiCall.address))).to.be.gt(0);
+    });
+
+    it("Allows withdraw to owner", async () => {
+      transaction = await multiCall.connect(owner).withdraw(token0.address);
+      await transaction.wait();
+
+      expect(Number(await token0.balanceOf(owner.address))).to.be.gt(0);
+      expect(await token0.balanceOf(multiCall.address)).to.eq(0);
     });
   });
 });
