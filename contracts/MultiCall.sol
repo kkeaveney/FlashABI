@@ -1,15 +1,7 @@
-//SPDX-License-Identifier: Unlicense
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-interface IERC20 {
-    function withdraw(
-        address from,
-        address to,
-        uint256 amount
-    ) external returns (uint256);
-
-    function balanceOf(address _account) external returns (uint256);
-}
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract MultiCall {
     address public owner;
@@ -23,20 +15,16 @@ contract MultiCall {
     {
         require(
             _targets.length == _data.length,
-            "target length doesn't match data length"
+            "_targets length != _data length"
         );
+
         for (uint256 i; i < _targets.length; i++) {
             (bool success, bytes memory result) = _targets[i].call(_data[i]);
-            require(success, "Call failed");
+            require(success, "call failed");
         }
     }
 
-    function withdraw(address _token, uint256 _amount) public {
-        require(msg.sender == owner, "Only owner can withdraw");
-        require(
-            IERC20(_token).balanceOf(msg.sender) >= _amount,
-            "Insufficient funds"
-        );
-        IERC20(_token).withdraw(address(this), msg.sender, _amount);
+    function withdraw(address token) public {
+        ERC20(token).transfer(owner, ERC20(token).balanceOf(address(this)));
     }
 }
